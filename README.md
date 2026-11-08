@@ -25,5 +25,6 @@ so every session created through `xirp_create_session` becomes a child of the or
 shows up under it in Xirp. Poll `xirp_get_session` to see when a child is waiting or done, and
 answer it with `xirp_send_message`.
 
-There is no dedicated tool for reading a child's transcript; look for one with `xirp_api_list`
-and call it through `xirp_api_send`.
+Xirp's API returns no transcript for terminal sessions, so `xirp_read_session` reads the tmux
+screen the child runs in. Claude Code redraws a full screen, so only what is on screen can be read,
+and only while the child runs: stopping it closes its terminal.

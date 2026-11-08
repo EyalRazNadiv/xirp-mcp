@@ -16,25 +16,45 @@ const cliEnv = {
   CHIRP_EDITION: process.env.CHIRP_EDITION ?? 'external',
 };
 
-const runXirp = args =>
+const run = (command, args, env) =>
   new Promise(resolve => {
     execFile(
-      xirpCli,
+      command,
       args,
-      { env: cliEnv, timeout: cliTimeoutMs, maxBuffer: 32 * 1024 * 1024 },
+      { env, timeout: cliTimeoutMs, maxBuffer: 32 * 1024 * 1024 },
       (error, stdout, stderr) => {
         const output = [stdout.trim(), stderr.trim()]
           .filter(Boolean)
           .join('\n');
         resolve({
           ok: !error,
+          stdout,
           output: output || (error ? String(error.message) : 'done'),
         });
       }
     );
   });
 
-// The CLI reads any argument that starts with "--" as a flag, even after a value flag.
+const runXirp = args => run(xirpCli, args, cliEnv);
+
+// Without a limit the CLI returns every session with ~80 fields each, about 700 KB.
+const defaultSessionLimit = 20;
+const sessionSummary = session => ({
+  id: session.id,
+  name: session.name,
+  status: session.status,
+  activityState: session.activityState,
+  waitingReason: session.waitingReason,
+  branch: session.branch,
+  worktreePath: session.worktreePath,
+  parentSessionId: session.parentSessionId,
+  lastActivityAt: session.lastActivityAt,
+  lastUserMessage: session.lastUserMessage?.slice(0, 200),
+});
+
+const defaultReadLines = 200;
+
+// The CLI reads any argument that starts with "-" as a flag, even after a value flag.
 const asCliValue = text => (text.startsWith('-') ? ` ${text}` : text);
 
 const flag = (name, value) =>
@@ -54,14 +74,15 @@ const tools = [
   {
     name: 'xirp_list_sessions',
     description:
-      'List Xirp sessions with status, branch, worktree and last user message. By default lists the project of the current directory; pass all=true for every project.',
+      'List Xirp sessions with status, branch, worktree and the start of the last user message. By default lists the project of the current directory; pass all=true for every project.',
     inputSchema: {
       type: 'object',
       properties: {
         project: { type: 'string', description: 'Project id, name or path.' },
         status: {
           type: 'string',
-          description: 'Comma-separated statuses, e.g. "running,idle".',
+          description:
+            'Comma-separated statuses: running, idle, finished, completed, failed.',
         },
         search: {
           type: 'string',
@@ -71,30 +92,38 @@ const tools = [
           type: 'boolean',
           description: 'List sessions of every project.',
         },
-        limit: { type: 'number' },
+        limit: {
+          type: 'number',
+          description: `Defaults to ${defaultSessionLimit}, most recent first.`,
+        },
       },
     },
-    args: a => [
-      'session',
-      'list',
-      '--json',
-      ...flag('project', a.project),
-      ...flag('status', a.status),
-      ...flag('search', a.search),
-      ...switchFlag('all', a.all),
-      ...flag('limit', a.limit),
-    ],
+    run: async a => {
+      const result = await runXirp([
+        'session',
+        'list',
+        '--json',
+        ...flag('project', a.project),
+        ...flag('status', a.status),
+        ...flag('search', a.search),
+        ...switchFlag('all', a.all),
+        ...flag('limit', a.limit ?? defaultSessionLimit),
+      ]);
+      if (!result.ok) return result;
+      const sessions = JSON.parse(result.stdout).map(sessionSummary);
+      return { ok: true, output: JSON.stringify(sessions, null, 2) };
+    },
   },
   {
     name: 'xirp_get_session',
     description:
-      'Show one session: status, lifecycle, activity (e.g. waiting for input), terminal outcome, goal, branch, worktree, cost. Poll this to know when a child session is done.',
+      'Show one session: status, lifecycle, activity (e.g. waiting for input), terminal outcome, goal, branch, worktree, cost. Poll this to know when a child session is done: status finished or idle means its turn ended and it waits for input; completed or failed means its agent exited.',
     inputSchema: {
       type: 'object',
       properties: {
         id: {
           type: 'string',
-          description: 'Session id (a unique prefix works).',
+          description: 'Full session id; a prefix does not match.',
         },
       },
       required: ['id'],
@@ -104,7 +133,7 @@ const tools = [
   {
     name: 'xirp_create_session',
     description:
-      'Start a new coding-agent session in Xirp with an initial prompt. By default it gets its own git worktree on an auto-generated branch and runs in the background. When this server runs inside a Xirp session, the new session becomes its child and can message it back.',
+      "Start a new coding-agent session in Xirp with an initial prompt. By default it gets its own git worktree on an auto-generated branch and runs in the background. When this server runs inside a Xirp session, the new session becomes its child and can message it back. Give the user the reply's links.desktop as a Markdown link named after the session; it opens the session in Xirp.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -188,6 +217,46 @@ const tools = [
       ...switchFlag('foreground', a.foreground),
       ...(a.tags ?? []).flatMap(tag => flag('tag', tag)),
     ],
+  },
+  {
+    name: 'xirp_read_session',
+    description:
+      "Read what a session's terminal shows now, as plain text, to see what a child session answered or is asking. Coding agents such as Claude Code redraw a full screen, so output that scrolled off is gone; ask the child to summarise when it is long. Only works while the session's terminal is live: once a session is stopped or ends, Xirp closes its terminal and nothing is left to read.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Full session id.' },
+        lines: {
+          type: 'number',
+          description: `At most this many lines, from the bottom. Defaults to ${defaultReadLines}.`,
+        },
+      },
+      required: ['id'],
+    },
+    // Xirp's API has no transcript for terminal sessions, so read the tmux pane the session runs in.
+    // A full-screen agent leaves empty rows between its output and its prompt; collapse them.
+    run: async a => {
+      const session = await runXirp(['session', 'get', a.id, '--json']);
+      if (!session.ok) return session;
+      const { tmuxSession } = JSON.parse(session.stdout);
+      if (!tmuxSession)
+        return { ok: false, output: `Session ${a.id} has no live terminal.` };
+      const lines = a.lines ?? defaultReadLines;
+      const pane = await run(
+        'tmux',
+        ['capture-pane', '-p', '-t', tmuxSession, '-S', `-${lines}`],
+        process.env
+      );
+      if (!pane.ok) return pane;
+      return {
+        ok: true,
+        output: pane.output
+          .replace(/\n(\s*\n)+/g, '\n\n')
+          .split('\n')
+          .slice(-lines)
+          .join('\n'),
+      };
+    },
   },
   {
     name: 'xirp_send_message',
@@ -293,7 +362,8 @@ const handlers = {
         isError: true,
       };
     }
-    const { ok, output } = await runXirp(tool.args(params.arguments ?? {}));
+    const args = params.arguments ?? {};
+    const { ok, output } = await (tool.run?.(args) ?? runXirp(tool.args(args)));
     return { content: [{ type: 'text', text: output }], isError: !ok };
   },
 };
