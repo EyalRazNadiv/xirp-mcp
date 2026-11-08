@@ -82,7 +82,7 @@ const tools = [
         status: {
           type: 'string',
           description:
-            'Comma-separated statuses: running, idle, finished, completed, failed.',
+            'Comma-separated statuses, e.g. running, idle, finished, completed, failed.',
         },
         search: {
           type: 'string',
