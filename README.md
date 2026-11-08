@@ -1,0 +1,29 @@
+# Xirp MCP server
+
+Lets one Claude Code session start, watch, message and stop other Xirp sessions. It wraps the
+CLI bundled inside `Xirp.app`, so Xirp must be running on the same Mac. It has no dependencies.
+
+## Setup
+
+Register it once for your user, from the repo root:
+
+```sh
+claude mcp add --scope user xirp -- node "$PWD/scripts/xirp-mcp/server.mjs"
+```
+
+It is not in the repo's `.mcp.json` because it only works on a Mac with Xirp open; elsewhere it
+would show up as a failing server.
+
+- `XIRP_CLI` overrides the CLI path (default `/Applications/Xirp.app/Contents/Resources/chirp-cli/xirp`).
+- The bundled CLI exits with `CHIRP_CLI_NAME is not set` unless `CHIRP_EDITION=external` is set;
+  the server sets it.
+
+## Orchestrating
+
+Run the orchestrator Claude session inside Xirp. Xirp sets `CHIRP_SESSION_ID` in its terminals,
+so every session created through `xirp_create_session` becomes a child of the orchestrator and
+shows up under it in Xirp. Poll `xirp_get_session` to see when a child is waiting or done, and
+answer it with `xirp_send_message`.
+
+There is no dedicated tool for reading a child's transcript; look for one with `xirp_api_list`
+and call it through `xirp_api_send`.
