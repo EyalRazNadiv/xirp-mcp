@@ -5,14 +5,11 @@ CLI bundled inside `Xirp.app`, so Xirp must be running on the same Mac. It has n
 
 ## Setup
 
-Register it once for your user, from the repo root:
+Register it once for your user, from this repo's root:
 
 ```sh
-claude mcp add --scope user xirp -- node "$PWD/scripts/xirp-mcp/server.mjs"
+claude mcp add --scope user xirp -- node "$PWD/server.mjs"
 ```
-
-It is not in the repo's `.mcp.json` because it only works on a Mac with Xirp open; elsewhere it
-would show up as a failing server.
 
 - `XIRP_CLI` overrides the CLI path (default `/Applications/Xirp.app/Contents/Resources/chirp-cli/xirp`).
 - The bundled CLI exits with `CHIRP_CLI_NAME is not set` unless `CHIRP_EDITION=external` is set;
